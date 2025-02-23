@@ -5,7 +5,6 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 import boto3
 import json
-import threading
 import os
 import logging
 import time
@@ -75,10 +74,12 @@ if APP_MODE == 'consumer':
         logger.info("Starting consumer thread...")
         while True:
             try:
+                # Receive message with increased visibility timeout
                 response = sqs.receive_message(
                     QueueUrl=queue_url,
-                    MaxNumberOfMessages=10,
-                    WaitTimeSeconds=20
+                    MaxNumberOfMessages=1,
+                    WaitTimeSeconds=20,
+                    VisibilityTimeout=30  # Increased visibility timeout to 30 seconds
                 )
                 
                 if 'Messages' in response:
@@ -95,24 +96,30 @@ if APP_MODE == 'consumer':
                                 'timestamp': time.time()
                             }
                             logger.info(f"Emitting message to clients: {event_data}")
+                            
+                            # Emit the message and wait for acknowledgment
                             socketio.emit('sqs_message', event_data, namespace='/', broadcast=True)
                             
-                            # Delete the message
+                            # Delete the message immediately after sending
+                            # This ensures we don't process the same message multiple times
                             sqs.delete_message(
                                 QueueUrl=queue_url,
                                 ReceiptHandle=message['ReceiptHandle']
                             )
                             logger.info(f"Deleted message: {message['MessageId']}")
+                            
+                            # Small delay between messages
+                            eventlet.sleep(0.1)
+                            
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
                             
             except Exception as e:
                 logger.error(f"Error in consumer thread: {e}")
-                time.sleep(5)  # Wait before retrying
+                eventlet.sleep(5)
 
-    consumer_thread = threading.Thread(target=consumer_thread_func)
-    consumer_thread.daemon = True
-    consumer_thread.start()
+    # Use eventlet.spawn for the consumer thread
+    consumer_thread = eventlet.spawn(consumer_thread_func)
     logger.info("Consumer thread started")
 
 @socketio.on('connect')
