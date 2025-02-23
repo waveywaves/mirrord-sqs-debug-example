@@ -19,6 +19,8 @@ services:
 
   producer:
     build: .
+    ports:
+      - "6002:5000"
     depends_on:
       localstack:
         condition: service_healthy
@@ -27,10 +29,22 @@ services:
       - AWS_SECRET_ACCESS_KEY=test
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ENDPOINT_URL=http://localstack:4566
-    command: python producer.py
+      - APP_MODE=producer
+      - FLASK_DEBUG=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./templates:/app/templates
+    healthcheck:
+      test: curl --fail http://localhost:5000/status || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   consumer:
     build: .
+    ports:
+      - "6001:5000"
     depends_on:
       localstack:
         condition: service_healthy
@@ -39,4 +53,14 @@ services:
       - AWS_SECRET_ACCESS_KEY=test
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ENDPOINT_URL=http://localstack:4566
-    command: python consumer.py 
+      - APP_MODE=consumer
+      - FLASK_DEBUG=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./templates:/app/templates
+    healthcheck:
+      test: curl --fail http://localhost:5000/status || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s 
