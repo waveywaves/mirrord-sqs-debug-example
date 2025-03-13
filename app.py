@@ -3,13 +3,13 @@ eventlet.monkey_patch()
 
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
-import boto3
 import json
 import os
 import logging
 import time
-import random
 from dotenv import load_dotenv
+from sqs_producer import create_producer, send_message
+from sqs_consumer import create_consumer, process_message
 
 # Configure logging
 logging.basicConfig(
@@ -31,55 +31,28 @@ socketio = SocketIO(
     ping_timeout=60,
     ping_interval=25,
     max_http_buffer_size=1e8,
-    manage_session=False,
-    namespace='/'
+    manage_session=False
 )
 
-# SQS configuration
-AWS_ENDPOINT_URL = os.getenv('AWS_ENDPOINT_URL', 'http://localhost:4566')
-AWS_REGION = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
-AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID', 'test')
-AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY', 'test')
-QUEUE_NAME = os.getenv('QUEUE_NAME', 'sample-queue')
+# Application mode
 APP_MODE = os.getenv('APP_MODE', 'producer')  # 'producer' or 'consumer'
-
 logger.info(f"Starting application in {APP_MODE} mode")
-logger.info(f"SQS endpoint: {AWS_ENDPOINT_URL}")
-logger.info(f"Queue name: {QUEUE_NAME}")
-
-# Initialize SQS client
-sqs = boto3.client('sqs',
-    endpoint_url=AWS_ENDPOINT_URL,
-    region_name=AWS_REGION,
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-)
-
-def ensure_queue_exists():
-    """Create queue if it doesn't exist and return its URL"""
-    try:
-        response = sqs.create_queue(QueueName=QUEUE_NAME)
-        queue_url = response['QueueUrl']
-        logger.info(f"Queue URL: {queue_url}")
-        return queue_url
-    except Exception as e:
-        logger.error(f"Error creating queue: {e}")
-        raise
-
-queue_url = ensure_queue_exists()
-consumer_thread = None
 
 if APP_MODE == 'consumer':
+    # Initialize SQS consumer
+    sqs, queue_url = create_consumer()
+    
     def consumer_thread_func():
+        """Thread function to receive messages from SQS and emit to WebSocket clients"""
         logger.info("Starting consumer thread...")
         while True:
             try:
-                # Receive message with increased visibility timeout
+                # Receive message
                 response = sqs.receive_message(
                     QueueUrl=queue_url,
                     MaxNumberOfMessages=1,
                     WaitTimeSeconds=20,
-                    VisibilityTimeout=30  # Increased visibility timeout to 30 seconds
+                    VisibilityTimeout=30
                 )
                 
                 if 'Messages' in response:
@@ -88,28 +61,23 @@ if APP_MODE == 'consumer':
                             message_body = json.loads(message['Body'])
                             logger.info(f"Received message: {message_body}")
                             
-                            # Emit message to WebSocket clients with namespace
                             event_data = {
                                 'value': message_body,
                                 'message_id': message['MessageId'],
                                 'receipt_handle': message['ReceiptHandle'],
                                 'timestamp': time.time()
                             }
+                            
+                            # Emit message to WebSocket clients
                             logger.info(f"Emitting message to clients: {event_data}")
+                            socketio.emit('sqs_message', event_data, namespace='/')
                             
-                            # Emit the message and wait for acknowledgment
-                            socketio.emit('sqs_message', event_data, namespace='/', broadcast=True)
-                            
-                            # Delete the message immediately after sending
-                            # This ensures we don't process the same message multiple times
+                            # Delete message after sending
                             sqs.delete_message(
                                 QueueUrl=queue_url,
                                 ReceiptHandle=message['ReceiptHandle']
                             )
                             logger.info(f"Deleted message: {message['MessageId']}")
-                            
-                            # Small delay between messages
-                            eventlet.sleep(0.1)
                             
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
@@ -118,17 +86,13 @@ if APP_MODE == 'consumer':
                 logger.error(f"Error in consumer thread: {e}")
                 eventlet.sleep(5)
 
-    # Use eventlet.spawn for the consumer thread
+    # Start consumer thread
     consumer_thread = eventlet.spawn(consumer_thread_func)
     logger.info("Consumer thread started")
 
-@socketio.on('connect')
-def handle_connect():
-    logger.info('Client connected')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    logger.info('Client disconnected')
+else:
+    # Initialize SQS producer
+    sqs, queue_url = create_producer()
 
 @app.route('/')
 def index():
@@ -149,22 +113,20 @@ def produce_message():
         return jsonify({'error': 'No message provided'}), 400
     
     try:
-        logger.info(f"Sending message: {message}")
-        response = sqs.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps(message)
-        )
-        
-        result = {
-            'success': True,
-            'message': 'Message sent successfully',
-            'metadata': {
-                'message_id': response['MessageId'],
-                'queue_url': queue_url
+        message_id = send_message(sqs, queue_url, message)
+        if message_id:
+            result = {
+                'success': True,
+                'message': 'Message sent successfully',
+                'metadata': {
+                    'message_id': message_id,
+                    'queue_url': queue_url
+                }
             }
-        }
-        logger.info(f"Message sent successfully: {result}")
-        return jsonify(result)
+            logger.info(f"Message sent successfully: {result}")
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Failed to send message'}), 500
     except Exception as e:
         logger.error(f"Error sending message: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
@@ -173,11 +135,11 @@ def produce_message():
 def status():
     status_info = {
         'mode': APP_MODE,
-        'sqs_endpoint': AWS_ENDPOINT_URL,
-        'queue_name': QUEUE_NAME,
         'queue_url': queue_url,
-        'status': 'running',
-        'consumer_thread_running': consumer_thread is not None and consumer_thread.is_alive() if consumer_thread else False
+        'status': 'running'
     }
     logger.info(f"Status check: {status_info}")
-    return jsonify(status_info) 
+    return jsonify(status_info)
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True) 
