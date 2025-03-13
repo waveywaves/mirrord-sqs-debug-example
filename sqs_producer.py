@@ -2,7 +2,6 @@ import boto3
 import json
 import os
 import time
-import random
 import logging
 from botocore.exceptions import ClientError
 
@@ -44,6 +43,15 @@ def create_producer():
 def send_message(sqs, queue_url, message):
     """Send a message to SQS queue"""
     try:
+        # Add timestamp to message
+        if isinstance(message, dict):
+            message['timestamp'] = time.time()
+        else:
+            message = {
+                'value': message,
+                'timestamp': time.time()
+            }
+
         response = sqs.send_message(
             QueueUrl=queue_url,
             MessageBody=json.dumps(message)

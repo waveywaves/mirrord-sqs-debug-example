@@ -101,7 +101,6 @@
             // Skip if we've already processed this message
             if (processedMessages.has(data.message_id)) {
                 console.log('Skipping duplicate message:', data.message_id);
-                socket.emit('message_ack', data.message_id);  // Still send ack for duplicates
                 return;
             }
             
@@ -116,7 +115,7 @@
             const messageElement = document.createElement('div');
             messageElement.className = 'bg-gray-50 p-3 rounded-lg mb-3';
             
-            const timestamp = new Date(data.timestamp * 1000).toLocaleString();
+            const timestamp = new Date(data.value.timestamp * 1000).toLocaleString();
             const formattedValue = typeof data.value === 'object' 
                 ? JSON.stringify(data.value, null, 2) 
                 : data.value;
@@ -143,9 +142,6 @@
                 const toRemove = Array.from(processedMessages).slice(0, 500);
                 toRemove.forEach(id => processedMessages.delete(id));
             }
-
-            // Send acknowledgment back to server
-            socket.emit('message_ack', data.message_id);
         });
 
         // Handle connection events
