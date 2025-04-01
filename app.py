@@ -130,13 +130,14 @@ def produce_message():
 
     data = request.json
     message = data.get('message')
+    attributes = data.get('attributes', {})
     
     if not message:
         logger.warning("Empty message received")
         return jsonify({'error': 'No message provided'}), 400
     
     try:
-        message_id = send_message(sqs, queue_url, message)
+        message_id = send_message(sqs, queue_url, message, attributes)
         if message_id:
             result = {
                 'success': True,

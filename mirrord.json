@@ -1,0 +1,14 @@
+{
+  "operator": true,
+  "target": "deployment/consumer",
+  "feature": {
+    "split_queues": {
+      "sample-queue": {
+        "queue_type": "SQS",
+        "message_filter": {
+          "local": "1"
+        }
+      }
+    }
+  }
+} 

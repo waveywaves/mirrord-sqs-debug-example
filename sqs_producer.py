@@ -3,6 +3,7 @@ import json
 import os
 import time
 import logging
+import random  # Add import for random module
 from botocore.exceptions import ClientError
 
 # Configure logging
@@ -40,7 +41,7 @@ def create_producer():
         logger.error(f"Error creating/connecting to queue: {e}")
         raise
 
-def send_message(sqs, queue_url, message):
+def send_message(sqs, queue_url, message, attributes=None):
     """Send a message to SQS queue"""
     try:
         # Add timestamp to message
@@ -52,9 +53,21 @@ def send_message(sqs, queue_url, message):
                 'timestamp': time.time()
             }
 
+        # Prepare message attributes
+        message_attributes = {}
+        
+        # Add 'local' attribute if specified
+        if attributes and 'local' in attributes and attributes['local'] == "1":
+            message_attributes['local'] = {
+                'DataType': 'String',
+                'StringValue': '1'
+            }
+        
+        # Send message with attributes
         response = sqs.send_message(
             QueueUrl=queue_url,
-            MessageBody=json.dumps(message)
+            MessageBody=json.dumps(message),
+            MessageAttributes=message_attributes if message_attributes else None
         )
         logger.info(f"Message sent successfully")
         logger.info(f"Message ID: {response['MessageId']}")
