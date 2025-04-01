@@ -47,12 +47,12 @@ if APP_MODE == 'consumer':
         logger.info("Starting consumer thread...")
         while True:
             try:
-                # Receive message
+                # Receive messages in batch
                 response = sqs.receive_message(
                     QueueUrl=queue_url,
-                    MaxNumberOfMessages=1,
-                    WaitTimeSeconds=20,
-                    VisibilityTimeout=30
+                    MaxNumberOfMessages=10,  # Get up to 10 messages at once
+                    WaitTimeSeconds=2,
+                    VisibilityTimeout=60  # Increased to 60 seconds
                 )
                 
                 if 'Messages' in response:
@@ -68,19 +68,42 @@ if APP_MODE == 'consumer':
                                 'timestamp': time.time()
                             }
                             
-                            # Emit message to WebSocket clients
-                            logger.info(f"Emitting message to clients: {event_data}")
-                            socketio.emit('sqs_message', event_data, namespace='/')
+                            # Create an event to wait for acknowledgment
+                            ack_received = eventlet.event.Event()
                             
-                            # Delete message after sending
-                            sqs.delete_message(
-                                QueueUrl=queue_url,
-                                ReceiptHandle=message['ReceiptHandle']
-                            )
-                            logger.info(f"Deleted message: {message['MessageId']}")
+                            def on_ack():
+                                logger.info(f"Received ack for message {message['MessageId']}")
+                                ack_received.send(True)
+                            
+                            # Emit message to WebSocket clients with acknowledgment callback
+                            try:
+                                logger.info(f"Emitting message {message['MessageId']} to WebSocket clients")
+                                socketio.emit('sqs_message', event_data, namespace='/', callback=on_ack)
+                                
+                                # Wait for acknowledgment with timeout
+                                try:
+                                    if ack_received.wait(timeout=15):  # Increased to 15 second timeout
+                                        logger.info(f"Acknowledgment received for message {message['MessageId']}")
+                                        try:
+                                            # Delete message after confirmed delivery
+                                            sqs.delete_message(
+                                                QueueUrl=queue_url,
+                                                ReceiptHandle=message['ReceiptHandle']
+                                            )
+                                            logger.info(f"Deleted message: {message['MessageId']}")
+                                        except Exception as e:
+                                            logger.error(f"Error deleting message {message['MessageId']}: {e}")
+                                    else:
+                                        logger.warning(f"No acknowledgment received for message {message['MessageId']} within timeout")
+                                except eventlet.timeout.Timeout:
+                                    logger.warning(f"Acknowledgment timeout for message {message['MessageId']}")
+                                    
+                            except Exception as e:
+                                logger.error(f"Error emitting message {message['MessageId']}: {e}")
                             
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
+                            continue
                             
             except Exception as e:
                 logger.error(f"Error in consumer thread: {e}")

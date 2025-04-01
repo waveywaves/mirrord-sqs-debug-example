@@ -94,9 +94,16 @@
         // Keep track of processed message IDs to prevent duplicates
         const processedMessages = new Set();
         let messageCount = 0;
+        let isConnected = false;
         
-        socket.on('sqs_message', function(data) {
+        socket.on('sqs_message', function(data, ack) {
             console.log('Received SQS message:', data);
+
+            // Acknowledge immediately
+            if (typeof ack === 'function') {
+                console.log('Acknowledging message immediately:', data.message_id);
+                ack(); 
+            }
             
             // Skip if we've already processed this message
             if (processedMessages.has(data.message_id)) {
@@ -112,41 +119,53 @@
                 waitingMessage.remove();
             }
 
-            const messageElement = document.createElement('div');
-            messageElement.className = 'bg-gray-50 p-3 rounded-lg mb-3';
-            
-            const timestamp = new Date(data.value.timestamp * 1000).toLocaleString();
-            const formattedValue = typeof data.value === 'object' 
-                ? JSON.stringify(data.value, null, 2) 
-                : data.value;
+            try {
+                const messageElement = document.createElement('div');
+                messageElement.className = 'bg-gray-50 p-3 rounded-lg mb-3';
+                
+                const timestamp = new Date(data.value.timestamp * 1000).toLocaleString();
+                let formattedValue;
+                
+                try {
+                    formattedValue = typeof data.value === 'object' 
+                        ? JSON.stringify(data.value, null, 2) 
+                        : String(data.value);
+                } catch (error) {
+                    console.error('Error formatting message:', error);
+                    formattedValue = 'Error formatting message';
+                }
 
-            messageElement.innerHTML = `
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-sm text-gray-600">${timestamp}</span>
-                    <span class="text-xs bg-blue-100 rounded px-2 py-1">
-                        Message ID: ${data.message_id}
-                    </span>
-                </div>
-                <pre class="text-gray-800 whitespace-pre-wrap break-words">${formattedValue}</pre>
-            `;
-            
-            messagesDiv.insertBefore(messageElement, messagesDiv.firstChild);
-            messageCount++;
-            document.getElementById('messageCount').textContent = `Messages received: ${messageCount}`;
-            
-            // Mark message as processed
-            processedMessages.add(data.message_id);
-            
-            // Keep the set size manageable
-            if (processedMessages.size > 1000) {
-                const toRemove = Array.from(processedMessages).slice(0, 500);
-                toRemove.forEach(id => processedMessages.delete(id));
+                messageElement.innerHTML = `
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-sm text-gray-600">${timestamp}</span>
+                        <span class="text-xs bg-blue-100 rounded px-2 py-1">
+                            Message ID: ${data.message_id}
+                        </span>
+                    </div>
+                    <pre class="text-gray-800 whitespace-pre-wrap break-words">${formattedValue}</pre>
+                `;
+                
+                messagesDiv.insertBefore(messageElement, messagesDiv.firstChild);
+                messageCount++;
+                document.getElementById('messageCount').textContent = `Messages received: ${messageCount}`;
+                
+                // Mark message as processed
+                processedMessages.add(data.message_id);
+                
+                // Keep the set size manageable
+                if (processedMessages.size > 1000) {
+                    const toRemove = Array.from(processedMessages).slice(0, 500);
+                    toRemove.forEach(id => processedMessages.delete(id));
+                }
+            } catch (error) {
+                console.error('Error processing message:', error);
             }
         });
 
         // Handle connection events
         socket.on('connect', () => {
             console.log('Connected to server with ID:', socket.id);
+            isConnected = true;
             const waitingMessage = document.querySelector('#messages .text-gray-500');
             if (waitingMessage) {
                 waitingMessage.textContent = 'Connected and waiting for messages...';
@@ -155,6 +174,7 @@
 
         socket.on('disconnect', () => {
             console.log('Disconnected from server');
+            isConnected = false;
             const waitingMessage = document.querySelector('#messages .text-gray-500');
             if (waitingMessage) {
                 waitingMessage.textContent = 'Disconnected from server. Reconnecting...';
@@ -163,6 +183,7 @@
 
         socket.on('connect_error', (error) => {
             console.error('Connection error:', error);
+            isConnected = false;
             const waitingMessage = document.querySelector('#messages .text-gray-500');
             if (waitingMessage) {
                 waitingMessage.textContent = 'Connection error. Retrying...';
