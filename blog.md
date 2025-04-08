@@ -1,302 +1,400 @@
-# Debugging SQS Queues with mirrord
+# Debugging SQS Consumers with mirrord
 
-## 1. Introduction to debugging SQS queues with mirrord
+## Introduction
 
-### a. Introduction
+In this guide, we'll cover how to debug SQS consumer applications running in a Kubernetes environment using mirrord. You'll learn how to set up mirrord and use it to effectively debug SQS consumers without the traditional overhead of rebuilding and redeploying your application.
 
-Debugging distributed applications, especially those relying on messaging services like Amazon Simple Queue Service (SQS), presents unique challenges. These systems often involve asynchronous communication across multiple services running in the cloud. Traditional local debugging methods struggle to capture the context and interactions needed to diagnose issues effectively.
+**Tip:** You can use mirrord to debug, test, and troubleshoot your SQS consumers locally with Kubernetes context, without needing to build or deploy each time you make a change.
 
-mirrord is a powerful tool designed to bridge this gap. It allows developers to debug cloud-native applications locally by mirroring remote context, including network traffic and environment variables, into their local process. This blog post will guide you through using mirrord to effectively debug applications built around AWS SQS.
+Debugging distributed applications, especially those that use messaging systems like Amazon SQS, can be challenging. These systems often span multiple services and depend on asynchronous communication patterns. Traditional debugging approaches can fall short when trying to trace issues across these complex systems.
 
-### b. Prerequisites
+Developers can debug cloud-native applications using mirrord by allowing local SQS consumer applications to access remote Kubernetes resources using context mirroring. Let's go through some common debugging techniques to debug such applications to understand why using mirrord would help you save time and shorten the development feedback loop when working with SQS consumers.
 
-Before diving in, ensure you have the following:
+## Common debugging techniques for SQS consumers
 
-#### Development Environment
-- A Kubernetes cluster (e.g., kind, minikube, Docker Desktop, or a remote cluster) OR Docker Compose setup locally.
-- `kubectl` CLI (if using Kubernetes).
-- Docker and Docker Compose (if using the Docker Compose setup).
+It can be cumbersome to debug SQS consumers on Kubernetes. The lack of a debugging workflow for applications with multiple runtime dependencies in the context of Kubernetes makes it even harder. Why is debugging SQS consumers in Kubernetes so challenging? Let's look at the common approaches and their limitations:
 
-#### Installing mirrord
+### Continuous Deployment
+Build a container image and deploy it to a Kubernetes cluster dedicated to testing or staging. The iterative process of building, deploying, and testing is resource-intensive and time-consuming, especially when you're making frequent code changes to your SQS consumers.
 
-Install the mirrord CLI. On macOS or Linux via Homebrew:
+### Log Analysis
+One of the most common ways to understand SQS consumer behavior in a cluster is by analyzing logs. Adding extra logs to extract runtime information about message consumption, visibility timeouts, and processing is very common. While collecting and analyzing logs from different consumers can be effective, it isn't the best real-time debugging solution, especially when trying to trace message flow through the system.
+
+### Remote Debugging
+Developers can use remote debugging tools built into IDEs to attach to SQS consumer processes already running in a Kubernetes cluster. While this allows real-time code inspection and interaction, it still requires heavy overhead from the IDE and a separate debug configuration for the deployment which can potentially affect the consumer's performance while debugging.
+
+The above methods can be used by themselves or they can be used together, but they all have significant drawbacks in terms of development speed and efficiency.
+
+## Challenges of debugging SQS consumers in Kubernetes
+
+Debugging SQS consumers effectively within a Kubernetes context is perhaps the biggest challenge of working with SQS in cloud environments. The build and release loop of the application can be short, but the process slows down development significantly. Nothing beats the ease and speed of debugging applications locally.
+
+SQS consumers present unique challenges:
+
+1. **Message Visibility**: SQS uses visibility timeouts to ensure messages are processed only once. Debugging can affect processing time, potentially causing message redelivery issues.
+
+2. **State Management**: Consumers must properly delete messages after processing, and debugging can disrupt this state management, leading to missed or duplicate message processing.
+
+3. **Environment Dependencies**: SQS consumers typically depend on specific configurations for queues, IAM permissions, and possibly DLQs that must be replicated in the debug environment.
+
+4. **Performance Implications**: Debugging tools can introduce latency that may trigger visibility timeout issues that don't exist in production.
+
+5. **Distributed Tracing**: Following a message through the entire system from producer to consumer can be challenging without proper tooling.
+
+These challenges make it essential to have a debugging approach that can seamlessly integrate with both local and remote SQS environments.
+
+## Prerequisites
+
+Before we dive into debugging SQS consumers with mirrord, ensure you have the following set up:
+
+### Developer Environment
+- A Kubernetes cluster (you can use one of the following):
+  - kind (Kubernetes in Docker)
+  - minikube
+  - Remote cluster with proper access
+- kubectl CLI
+- mirrord CLI
+- helm (if using helm for mirrord operator installation)
+
+### Installing mirrord
+
+Install the mirrord CLI:
+
 ```bash
 brew install metalbear-co/mirrord/mirrord
 ```
-For other installation methods, see the [mirrord documentation](https://mirrord.dev/docs/overview/quick-start/).
 
-#### Installing the mirrord Operator (Optional but Recommended for Queue Splitting)
+For alternative installation methods, please follow the [quick start guide](https://mirrord.dev/docs/overview/quick-start/).
 
-For advanced features like queue splitting, the mirrord operator needs to be installed in your Kubernetes cluster.
+### Installing mirrord operator
+
+You can install the mirrord operator using either Helm or the mirrord CLI:
+
+**Tip:** You can obtain a LICENSE key by visiting [https://app.metalbear.co/](https://app.metalbear.co/). This key is required for installing the mirrord operator with queue splitting functionality.
 
 Using Helm:
 ```bash
 # Add the MetalBear Helm repository
 helm repo add metalbear https://metalbear-co.github.io/charts
 
-# Update the repository
-helm repo update
-
-# Install the chart (replace with your license key if you have one)
-helm install mirrord-operator metalbear/mirrord-operator --set operator.license.key=your-license-key
+# Install the chart with queue splitting enabled
+helm install --set license.key=your-license-key mirrord-operator metalbear/mirrord-operator
 ```
 
 Or using the CLI:
 ```bash
-# Replace with your license key if you have one
-mirrord operator setup --accept-tos --license-key your-license-key | kubectl apply -f -
-```
-*Note: Queue splitting for SQS relies on intercepting AWS SDK calls and doesn't require specific Helm flags like Kafka.*
-
-### c. What is AWS SQS and when is it used?
-
-Amazon Simple Queue Service (SQS) is a fully managed message queuing service that enables you to decouple and scale microservices, distributed systems, and serverless applications. Key features and use cases include:
-
-- **Decoupling:** Allows components to send and receive messages without direct coupling, improving fault tolerance and scalability.
-- **Asynchronous Communication:** Enables background processing, task offloading, and buffering.
-- **Reliability:** Offers Standard (at-least-once delivery) and FIFO (exactly-once processing, first-in-first-out) queues.
-- **Scalability:** Automatically scales to handle message volume.
-
-SQS is commonly used for work queues, buffering requests between services, decoupling microservices, and enabling event-driven architectures.
-
-### d. Popular queue services
-
-Besides SQS, other popular queue/messaging services include:
-
-1.  **Apache Kafka**: Distributed event streaming platform.
-2.  **RabbitMQ**: Traditional message broker (AMQP).
-3.  **Google Pub/Sub**: Google Cloud's asynchronous messaging service.
-4.  **Azure Service Bus**: Microsoft's enterprise message broker.
-5.  **NATS**: High-performance messaging system.
-
-This guide focuses on debugging applications using AWS SQS with mirrord.
-
-## 2. Scenarios while debugging an SQS queue
-
-### a. Simple SQS producer-consumer application example
-
-To illustrate debugging with mirrord, we'll use the application in this repository ([mirrord-sqs-debug-example](https://github.com/waveywaves/mirrord-sqs-debug-example)). It consists of:
-
-- **LocalStack:** A local cloud service emulator providing an SQS endpoint.
-- **Producer Service:** A Flask web application (`app.py` running in `producer` mode) that sends messages to an SQS queue via a web UI.
-- **Consumer Service:** A Flask web application (`app.py` running in `consumer` mode) that receives messages from the SQS queue and displays them using WebSockets in a UI.
-
-The services are orchestrated using `docker-compose.yml`.
-
-The following diagram shows the basic setup running via Docker Compose without mirrord:
-
-`![Placeholder Diagram - SQS Setup without mirrord]`
-
-#### i. Understand the application consumer, producer, and SQS config
-
-**Producer (`producer` service in `docker-compose.yml`):**
-- Runs `app.py` with `APP_MODE=producer`.
-- Serves `index.html` which provides a UI to send messages.
-- Uses `boto3` (AWS SDK for Python) to send messages to SQS via the `/produce` endpoint.
-
-**Consumer (`consumer` service in `docker-compose.yml`):**
-- Runs `app.py` with `APP_MODE=consumer`.
-- Polls the SQS queue using `boto3`.
-- Uses Flask-SocketIO to push received messages to the `index.html` UI for display.
-
-**SQS Configuration (via Environment Variables in `docker-compose.yml`):**
-- The applications connect to the `localstack` service for SQS.
-- Key environment variables configure `boto3`:
-  - `AWS_ENDPOINT_URL=http://localstack:4566`
-  - `AWS_DEFAULT_REGION=us-east-1`
-  - `QUEUE_NAME=sample-queue` (default, used by `sqs_consumer.py` and `sqs_producer.py`)
-  - Test credentials (`AWS_ACCESS_KEY_ID=test`, `AWS_SECRET_ACCESS_KEY=test`) are used for LocalStack.
-
-#### ii. Table of important values for the SQS endpoint and queue
-
-| Parameter             | Value                       | Description                                     | Source                                    |
-|-----------------------|-----------------------------|-------------------------------------------------|-------------------------------------------|
-| `AWS_ENDPOINT_URL`    | `http://localstack:4566`    | The endpoint URL for the SQS service (LocalStack) | `docker-compose.yml`                      |
-| `AWS_DEFAULT_REGION`  | `us-east-1`                 | The AWS region for the SQS queue                | `docker-compose.yml`                      |
-| `AWS_ACCESS_KEY_ID`   | `test`                      | AWS Access Key (for LocalStack)                 | `docker-compose.yml`                      |
-| `AWS_SECRET_ACCESS_KEY` | `test`                      | AWS Secret Key (for LocalStack)                 | `docker-compose.yml`                      |
-| `QUEUE_NAME`          | `sample-queue` (default)    | The name of the SQS queue                       | `sqs_consumer.py`, `sqs_producer.py`      |
-| Queue URL             | (Dynamically determined)    | The full URL of the queue, returned by SQS      | `boto3` client                            |
-
-### b. Ideal scenario while debugging SQS queues
-
-When debugging SQS-based applications, you ideally want:
-
-1.  Full visibility into messages being sent and received.
-2.  The ability to receive and process messages locally without disrupting the deployed application.
-3.  To use your local debugger and development tools.
-4.  Access to the same environment variables and configuration as the remote service.
-
-mirrord helps achieve this by mirroring traffic and context from a remote target (like a Kubernetes pod) to your local process.
-
-### c. Problems faced while debugging SQS queues
-
-#### i. The remote consumer competes with the debug consumer
-
-A common challenge arises when you run your consumer service locally to debug it while the same service is also running remotely (e.g., in Kubernetes or even another Docker container). Both the local and remote instances will poll the same SQS queue. SQS delivers a message to only *one* consumer instance per `VisibilityTimeout` period. This means your local debug instance might only receive *some* of the messages, or none at all, making it difficult to reproduce specific issues or test message handling reliably. The remote consumer "competes" for messages.
-
-#### ii. Full data redirection from the main consumer to the debug consumer (when using copy_target + scaledown in Kubernetes)
-
-If your application is running in Kubernetes, mirrord offers the `copy_target` feature with the `scale_down` option to solve the competition problem. This ensures *all* messages are directed only to your local debug consumer. It works like this:
-
-1.  mirrord identifies the target pod (e.g., the pod running your consumer deployment).
-2.  It creates an exact copy of this target pod's specification but doesn't run it yet.
-3.  It scales down the original deployment to zero replicas, stopping the remote consumer.
-4.  It starts the mirrord session targeting the *copied* pod specification (which now includes the mirrord agent).
-5.  Your local process, running with mirrord, inherits the environment and network context of the copied pod and becomes the *only* consumer polling the queue.
-
-`![Placeholder Diagram - SQS copy_target + scale_down]`
-
-*(Note: `copy_target` is primarily a Kubernetes feature. For the Docker Compose setup in this example, you'd typically achieve exclusive consumption by simply stopping the remote consumer service: `docker-compose stop consumer`)*
-
-## 3. Debugging an SQS topic with mirrord
-
-*(The following examples assume your application is deployed in Kubernetes for features like `copy_target` and Operator-based queue splitting. For the Docker Compose example, mirrord primarily helps by mirroring environment variables and potentially outgoing traffic if needed.)*
-
-### a. Simple Debug: Local consumer consumes the data exclusively (Kubernetes)
-
-#### i. copy_target + scaledown
-
-To ensure your local consumer gets all SQS messages without competition from the deployed version in Kubernetes:
-
-**Configuration (`.mirrord/sqs_exclusive.json`):**
-```json
-{
-  "target": {
-    "deployment": "your-consumer-deployment-name", // Replace with your deployment name
-    "container": "your-container-name" // Replace with your container name
-  },
-  "feature": {
-    "copy_target": {
-      "scale_down": true
-    },
-    "env": true,
-    "network": {
-      "incoming": "mirror",
-      "outgoing": true
-    }
-  },
-  "operator": true // Assumes operator is installed
-}
+mirrord operator setup --accept-tos --license-key your-license-key --queue-splitting | kubectl apply -f -
 ```
 
-**Execution:**
+**Note:** When installing with the mirrord-operator Helm chart, queue splitting is enabled by setting the `operator.queueSplitting` value to `true`.
+
+## Sample application setup
+
+### Overview of the sample application
+
+Let's explore how to debug SQS consumers using a simple example application. Our example consists of:
+
+- An SQS queue (using LocalStack in local development)
+- A producer service that publishes messages to an SQS queue
+- A consumer service that reads messages from the same queue
+
+**Note:** The sample application used in this guide is available [here](https://github.com/waveywaves/mirrord-sqs-debug-example). This guide is intended to be used alongside the repository, which contains all the code and configuration files needed to follow along.
+
+The following architecture diagram shows the basic setup of our SQS application in Kubernetes without mirrord. It illustrates how the producer sends messages to the SQS queue, and how the consumer reads these messages in a standard deployment:
+
+![Architecture Diagram - Setup without mirrord](images/setup-without-mirrord.png)
+
+### Understanding the application components
+
+Our example application has these components:
+
+**Producer** (`sqs-producer` deployment):
+- Flask web application that publishes messages to an SQS queue
+- Exposes an API endpoint for receiving message data
+- Uses the boto3 Python library to interact with SQS
+
+**Consumer** (`sqs-consumer` deployment):
+- Flask web application that reads messages from the SQS queue
+- Processes messages and exposes them in the logs
+- Uses the boto3 Python library to interact with SQS
+
+**SQS Configuration**:
+- Queue name: `sample-queue`
+- Local development uses LocalStack to emulate SQS
+
+The applications are containerized and deployed to Kubernetes.
+
+## Deploying the sample application
+
+### Starting your Kubernetes cluster
+
+We are going to use minikube as the Kubernetes environment in which we are going to deploy our sample application. Run the following command to start minikube locally.
+
+```
+minikube start
+```
+
+### Applying Kubernetes manifests
+
+Let's start by deploying our example SQS application to Kubernetes:
+
 ```bash
-# Ensure your Kubernetes deployment exists
-# kubectl apply -f your-deployment.yaml
-
-# Run your local consumer application with mirrord
-mirrord exec -f .mirrord/sqs_exclusive.json -- python app.py
+kubectl apply -f kube/
 ```
 
-`![Placeholder Screenshot - Kubernetes Apply Command]`
-`![Placeholder Screenshot - mirrord exec copy_target output]`
-`![Placeholder Screenshot - Producer UI sending messages]`
-`![Placeholder Screenshot - Local Consumer UI receiving all messages]`
+After running this command, you'll see output similar to this:
 
-This setup directs all SQS messages meant for `your-consumer-deployment-name` exclusively to your local `python app.py` process.
+![Kubernetes Apply Command](images/k-apply-f-kube.png)
 
-### b. Queue Splitting: Local and Remote consumers consume the same data (Kubernetes)
+This deploys the LocalStack SQS emulator, producer, and consumer to your Kubernetes cluster. Once everything is up and running, we can proceed with debugging.
 
-#### i. Introduction to queue splitting for SQS
+### Important SQS configuration values
 
-Sometimes, you want to debug message processing locally *without* stopping the remote consumer. mirrord's queue splitting feature (requires the mirrord Operator) enables this for SQS. It intercepts the messages received by the remote consumer and sends a *copy* of those messages to your local process as well.
+#### SQS endpoint configuration
 
-`![Placeholder Diagram - SQS Queue Splitting Setup 1]`
-`![Placeholder Diagram - SQS Queue Splitting Setup 2]`
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| AWS_ENDPOINT_URL | http://localstack:4566 | LocalStack SQS endpoint |
+| AWS_DEFAULT_REGION | us-east-1 | AWS region for SQS |
+| AWS_ACCESS_KEY_ID | test | Access key for LocalStack (dummy value) |
+| AWS_SECRET_ACCESS_KEY | test | Secret key for LocalStack (dummy value) |
+| QUEUE_NAME | sample-queue | Name of the SQS queue |
 
-#### ii. How does queue splitting work with SQS?
+#### Consumer configuration
 
-1.  The mirrord agent, injected into the remote target pod by the operator, monitors outgoing network calls.
-2.  When it detects calls to the AWS SDK for `sqs:ReceiveMessage`, it intercepts the response containing the messages *before* it reaches the remote application code.
-3.  It forwards a copy of these received messages over the mirrord connection to your local process.
-4.  Your local mirrord layer makes these copied messages available as if your local code had called `sqs.receive_message`.
-5.  The original messages continue to the remote application code, which processes them as usual (including deleting them). Your local copy does not affect the remote processing lifecycle.
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| MaxNumberOfMessages | 10 | Maximum number of messages to retrieve per poll |
+| WaitTimeSeconds | 20 | Long polling time in seconds |
+| VisibilityTimeout | 30 | How long a message is invisible after being received |
 
-#### iii. What local mirrord needs to know
+## Debugging scenarios for SQS consumers
 
-You configure queue splitting in your local mirrord configuration file:
+When debugging SQS consumers, you typically want:
 
-**Configuration (`.mirrord/sqs_split.json`):**
+1. Full visibility into the message flow
+2. Ability to intercept messages without affecting production systems
+3. Reproducing issues locally with the same environment as production
+4. Access to queue metrics and visibility timeout information
+5. Low latency and real-time monitoring capabilities
+
+mirrord helps create these ideal conditions by connecting your local development environment to your remote Kubernetes cluster. Let's explore two debugging approaches which help us debug SQS queues.
+
+## Debugging an SQS consumer with mirrord
+
+### Using the SQS Producer UI to send messages to the consumer
+
+Before we start debugging the consumer itself we need to know how to send messages to the SQS queue in question. This can be done by accessing the UI for the consumer using port forwarding. Running the following command will allow you to access your SQS Producer UI in the browser at http://localhost:5000
+
+```
+kubectl port-forward deployment/sqs-producer 5000:5000
+```
+
+Once you navigate here using your browser you should be able to able to access the producer UI.
+
+![SQS Producer UI Screenshot for Queue Splitting](images/sqs-producer-ui-screenshot.png)
+
+Now that we know how to access the producer, let's dive into two effective approaches for debugging SQS consumers with mirrord:
+
+### Approach 1: Simple Debugging with copy_target + scaledown (easier to execute)
+
+The simplest way to debug SQS consumers is to ensure your local consumer is the only one receiving messages from the queue. mirrord's `copy_target` feature with `scale_down` enabled accomplishes this. For detailed documentation, see [mirrord's copy target documentation](https://mirrord.dev/docs/using-mirrord/copy-target/#replacing-a-whole-deployment-using-scale_down).
+
 ```json
 {
-  "target": {
-    "deployment": "your-consumer-deployment-name", // Replace with your deployment name
-    "container": "your-container-name" // Replace with your container name
-  },
-  "feature": {
-    "split_queues": "sqs", // Enable SQS queue splitting globally
-    // Or specify queues if needed, though often not necessary for SQS
-    // "split_queues": {
-    //   "my_explicit_queue_id": { // An identifier for logs/filtering
-    //      "queue_type": "SQS"
-    //      // Optional message filters can be added here
-    //   }
-    // },
-    "env": true,
-    "network": {
-      "incoming": "mirror", // Mirror other incoming traffic if needed
-      "outgoing": {         // Filter outgoing traffic if needed
-         "filter": "block", // Block unnecessary outgoing calls locally
-         "aws": true       // Allow AWS SDK calls to pass through mirrord
-      }
+    "operator": true,
+    "target": {
+        "deployment": "sqs-consumer",
+        "container": "consumer"
+    },
+    "feature": {
+        "copy_target": {
+            "scale_down": true
+        }
     }
-  },
-  "operator": true // Requires operator
 }
 ```
-*Note: Simply enabling `"split_queues": "sqs"` often works, as mirrord intercepts based on the SDK calls.*
 
-#### iv. What the operator needs to know
+This configuration:
+1. Targets the `sqs-consumer` deployment
+2. Creates a copy of the deployment's pod
+3. Scales down the original deployment to zero replicas
+4. Ensures your local application receives all the messages
 
-Unlike Kafka, SQS queue splitting generally doesn't require specific Custom Resource Definitions (CRDs) in the cluster. The operator facilitates the injection of the mirrord agent, which handles the SQS interception based on AWS SDK calls made by the targeted application. Ensure the operator is installed in your cluster.
+This approach is illustrated in the following diagram:
 
-#### v. How to use queue splitting to debug an SQS application (Kubernetes)
+![Architecture Diagram - Copy Target with Scale Down](images/setup-with-mirrord-copytarget-scaledown.png)
 
-##### Prerequisites
+1. Here the sqs-producer sends messages to the sample-queue
+2. Which is then picked up by the mirrord-copy Pod which has scaled the consumer Pod down and is going to relay the message to our local consumer.
+3. The local mirrord based execution of the consumer application receives this. Messages can be created and sent from the UI
 
-- Kubernetes cluster with your application deployed.
-- mirrord CLI installed locally.
-- mirrord Operator installed in the cluster.
+Now that we understand how this works, let's use this configuration locally.
 
-##### Configurations
+#### How to use this configuration
 
-- **Local:** Create a mirrord configuration file like `.mirrord/sqs_split.json` (see above).
-- **Remote:** Ensure your consumer deployment exists in Kubernetes.
+The configuration is located in a file named `.mirrord/copytarget_plus_scaledown.json`. Use this configuration to run the consumer application locally with the following command:
 
-##### Debugging Steps
+```bash
+APP_MODE=consumer PYTHONUNBUFFERED=1 mirrord exec --config .mirrord/copytarget_plus_scaledown.json -- python app.py
+```
 
-1.  **Target the remote consumer:**
-    ```bash
-    # Run your local app.py consumer with mirrord queue splitting
-    mirrord exec -f .mirrord/sqs_split.json -- python app.py
-    ```
+When you run this command, you can use the producer to send messages which will then be picked up by your local consumer after which, you'll see output similar to:
 
-2.  **Send Messages:** Use your producer (locally, remotely, or via AWS console/CLI) to send messages to the SQS queue being monitored by the remote deployment.
+![Terminal Output for Copy Target](images/terminal-screenshot-for-copytarget-output.png)
 
-3.  **Observe:**
-    *   The remote consumer application should receive and process messages as normal.
-    *   Your local `python app.py` instance, running with mirrord, should *also* receive copies of the same messages.
-    *   You can now set breakpoints and debug message processing locally without affecting the deployed service.
+**Tip:** This approach is perfect for isolated debugging, but be aware that it temporarily stops the original consumer from processing messages. Use it in development or testing environments rather than production.
 
-`![Placeholder Screenshot - mirrord exec Queue Splitting]`
-`![Placeholder Screenshot - Producer UI sending messages]`
-`![Placeholder Screenshot - Remote Consumer Logs showing processing]`
-`![Placeholder Screenshot - Local Consumer UI/Debugger showing processing]`
+### Approach 2: Queue Splitting for non-disruptive debugging
 
-## 4. Conclusion
+Queue splitting is a powerful feature in mirrord that allows both your local application and the remote application to receive the same messages. This is particularly useful when you want to debug without disrupting the existing remote consumers. For detailed documentation on queue splitting, visit [https://mirrord.dev/docs/using-mirrord/queue-splitting/](https://mirrord.dev/docs/using-mirrord/queue-splitting/).
 
-Debugging applications using AWS SQS can be significantly simplified using mirrord. Whether you need exclusive access to messages for deep debugging or want to observe message flow alongside your deployed service without disruption, mirrord provides powerful solutions:
+#### How queue splitting works
 
-1.  **`copy_target` + `scale_down` (Kubernetes):** Grants your local debugger exclusive access to SQS messages intended for a remote deployment.
-2.  **Queue Splitting (Kubernetes with Operator):** Delivers copies of messages received by your remote consumer to your local process, enabling non-disruptive debugging.
-3.  **Environment Mirroring:** Provides your local process with the necessary AWS credentials and configuration from the remote environment.
+Before we get into how to use queue splitting, let's go through the following diagrams to illustrate how queue splitting works in mirrord:
 
-By integrating mirrord into your workflow, you can:
+Initial setup with the mirrord operator intercepting messages:
+![Architecture Diagram - Queue Splitting with single debug consumer](images/setup-with-mirrord-queue-splitting-1.png)
 
-- Accelerate bug fixing for SQS-related issues.
-- Test changes locally against real cloud message flows.
-- Gain better insight into asynchronous interactions.
-- Debug production/staging issues more effectively.
+The mirrord operator intercepts messages at the SQS API level before they are delivered to consumers. It makes copies of these messages and delivers them to both the remote consumers and your local application. 
 
-Explore the [official mirrord documentation](https://mirrord.dev/docs/) to learn more about its features and configuration options. 
+This works by:
+1. The mirrord operator understands the SQS protocol
+2. It identifies messages being sent to specific queues
+3. It duplicates these messages, sending the original to the real consumers and copies to your local application
+
+When multiple debug consumers are active, the mirrord operator creates temporary queues for each one. Each developer gets their own independent debug session with access to the message stream.
+
+In case of multiple debug consumers, a new temporary mirrord queue and mirrord-copy Pod is created for every new debug consumer. Setup with two distinct debug consumers:
+![Architecture Diagram - Queue Splitting setup with two debug consumers](images/setup-with-mirrord-queue-splitting-2.png)
+
+mirrord allows multiple debug consumers to run simultaneously. Each developer can run their own local consumer, and all will receive copies of the same messages. The mirrord operator also ensures that each local debug consumer gets a complete copy of the message stream, without any competition between them or with the production consumers.
+
+**Tip:** This means your entire team can debug the same SQS consumer application simultaneously without interfering with each other or with production traffic! This team collaboration capability is a feature of [mirrord for Teams](https://mirrord.dev/docs/overview/teams/).
+
+#### Configuration for queue splitting
+
+For queue splitting to work, you need to have a local and a remote configuration for debugging your SQS based application. The local configuration is used by the CLI and the remote configuration contains CRDs which are used by the operator to get more information on the SQS instance and the queues to be intercepted.
+
+##### Local mirrord configuration
+
+The queue splitting configuration can be found in the `.mirrord/mirrord.json` file and has the following content:
+
+```json
+{
+    "operator": true,
+    "target": {
+        "deployment": "sqs-consumer",
+        "container": "consumer"
+    },
+    "feature": {
+        "split_queues": {
+            "sample_queue": {
+                "queue_type": "SQS",
+                "message_filter": {
+                    "source": "^sample-.*"
+                }
+            }
+        }
+    }
+}
+```
+
+This configuration tells the local mirrord client:
+- The SQS queue to listen to (`sample_queue`)
+- To filter messages based on a pattern (`^sample-`)
+- Which deployment to target (`sqs-consumer`)
+
+##### Operator configuration
+
+The mirrord operator needs information about the SQS setup. This is configured using Kubernetes custom resources.
+
+First, create a `MirrordSQSClientConfig` resource:
+
+```yaml
+apiVersion: queues.mirrord.metalbear.co/v1alpha
+kind: MirrordSQSClientConfig
+metadata:
+  name: base-config
+  namespace: mirrord
+spec:
+  properties:
+  - name: endpoint_url
+    value: http://localstack.default.svc.cluster.local:4566
+  - name: region_name
+    value: us-east-1
+  - name: aws_access_key_id
+    value: test
+  - name: aws_secret_access_key
+    value: test
+```
+
+Next, create a `MirrordSQSQueuesConsumer` resource:
+
+```yaml
+apiVersion: queues.mirrord.metalbear.co/v1alpha
+kind: MirrordSQSQueuesConsumer
+metadata:
+  name: sqs-consumer-queues
+  namespace: default
+spec:
+  consumerApiVersion: apps/v1
+  consumerKind: Deployment
+  consumerName: sqs-consumer
+  queues:
+  - id: sample_queue
+    clientConfig: base-config
+    nameSources:
+    - directEnvVar:
+        container: consumer
+        variable: QUEUE_NAME
+```
+
+Apply these configurations to your cluster:
+
+```bash
+kubectl apply -f kube/
+```
+
+Setting up the mirrord operator for queue splitting will look like this:
+
+![Terminal Screenshot for Setup Queue Splitting](images/terminal-screenshot-for-setup-queue-splitting.png)
+
+#### Running your local consumer with queue splitting
+
+Now you can run your local application with mirrord using queue splitting:
+
+```bash
+APP_MODE=consumer PYTHONUNBUFFERED=1 mirrord exec -f .mirrord/mirrord.json -- python app.py
+```
+
+**Tip:** You can use message filters to focus on specific patterns of messages, making debugging more targeted.
+
+After running with queue splitting and specific message filtering, you'll see output like this:
+
+![Terminal Screenshot for Filter Queue Splitting](images/terminal-screenshot-for-filter-queue-splitting.png)
+
+You'll see that the consumer and the copy Pods are both available ensuring that the original consumer doesn't stop consuming the messages whereas the copy Pods will received the filtered messages:
+
+![mirrord Exec Queue Splitting 1](images/mirrord-exec-queue-splitting-1.png)
+
+Similarly multiple debug consumers can consume these messages without disrupting the original consumer by creating more copy Pods and temporary mirrord queues as required:
+
+![mirrord Exec Queue Splitting 2](images/mirrord-exec-queue-splitting-2.png)
+
+Here, each instance creates its own mirrord-copy pod and receives the same messages, demonstrating how multiple developers can debug simultaneously. Notice in the second screenshot how multiple debug consumers are actively receiving messages in parallel. This collaborative debugging is made possible by [mirrord for Teams](https://mirrord.dev/docs/overview/teams/), which enables concurrent use of mirrord on the same environment.
+
+## Debugging with mirrord vs. other debugging techniques
+
+mirrord distinguishes itself by eliminating the need for repeated building and deployment cycles. It allows you to run your SQS consumer locally while providing it with the necessary network and execution context of the target Kubernetes environment. Your local consumer behaves as if it were running within the cluster, enabling you to debug using familiar tools without the overhead of build and deploy cycles.
+
+## Conclusion
+
+In this guide, we've explored how to use mirrord to debug SQS consumer applications in Kubernetes. We've seen two powerful approaches:
+
+1. **Queue splitting** allows you to debug without disrupting existing consumers by duplicating messages. Learn more about this feature in the [queue splitting documentation](https://mirrord.dev/docs/using-mirrord/queue-splitting/).
+2. **Copy target with scale down** gives your local application exclusive access to SQS messages. Learn more in the [copy target documentation](https://mirrord.dev/docs/using-mirrord/copy-target/#replacing-a-whole-deployment-using-scale_down).
+
+By leveraging mirrord, you can significantly improve your productivity when working with SQS consumer applications and streamline your debugging workflow. For teams working together on SQS applications, [mirrord for Teams](https://mirrord.dev/docs/overview/teams/) provides additional collaborative features that enable multiple developers to debug simultaneously.
+
+Curious to try it out? Give mirrord a go and see how it works for you. Got questions? Visit the official [mirrord documentation](https://mirrord.dev/docs/) or join the community Discord channel! 
