@@ -77,10 +77,13 @@ kubectl apply -f kube/
 ```
 
 This will deploy:
-- LocalStack service for SQS emulation
-- Producer deployment with web UI
-- Consumer deployment
-- mirrord operator configuration
+- LocalStack service for SQS emulation in the `default` namespace
+- Producer deployment with web UI in the `default` namespace
+- Consumer deployment in the `default` namespace
+- mirrord operator configuration in the `mirrord` namespace
+- Queue registry in the `mirrord` namespace
+
+Note: The consumer deployment is annotated with `mirrord.metalbear.co/enabled: "true"` for mirrord integration.
 
 ## Debugging with mirrord
 
@@ -122,6 +125,7 @@ The application uses LocalStack to emulate SQS in local development:
 - LocalStack runs on port 4566
 - All services are configured to use LocalStack's endpoint
 - Test AWS credentials are used for authentication
+- The SQS queue is automatically created by an init container in the LocalStack deployment
 
 ### mirrord Queue Splitting
 

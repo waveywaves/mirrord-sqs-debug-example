@@ -2,8 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sqs-consumer
-  annotations:
-    mirrord.metalbear.co/enabled: "true"
 spec:
   replicas: 1
   selector:
@@ -14,7 +12,6 @@ spec:
       labels:
         app: consumer
     spec:
-      serviceAccountName: mirrord-operator
       containers:
       - name: consumer
         image: docker.io/waveywaves/mirrord-sqs-debug-ex-consumer:latest
@@ -30,3 +27,16 @@ spec:
           value: "http://localstack:4566"
         - name: QUEUE_NAME
           value: "sample-queue" 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sqs-consumer
+spec:
+  selector:
+    app: consumer
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP 

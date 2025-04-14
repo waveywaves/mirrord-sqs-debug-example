@@ -78,12 +78,12 @@ Using Helm:
 helm repo add metalbear https://metalbear-co.github.io/charts
 
 # Install the chart with queue splitting enabled
-helm install --set license.key=your-license-key mirrord-operator metalbear/mirrord-operator
+helm install --set license.key=your-license-key --set operator.sqsSplitting=true mirrord-operator metalbear/mirrord-operator
 ```
 
 Or using the CLI:
 ```bash
-mirrord operator setup --accept-tos --license-key your-license-key --queue-splitting | kubectl apply -f -
+mirrord operator setup --accept-tos --license-key your-license-key --sqs-splitting --aws-role-arn 12345 | kubectl apply -f -
 ```
 
 **Note:** When installing with the mirrord-operator Helm chart, queue splitting is enabled by setting the `operator.queueSplitting` value to `true`.
