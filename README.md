@@ -22,9 +22,12 @@ A sample application demonstrating how to debug SQS consumers using mirrord. Thi
 ## Features
 
 - Producer service with a web UI for publishing messages
-- Consumer service that processes SQS messages, these messages can be seen in the terminal
+- Consumer service that processes SQS messages
+- LocalStack integration for local SQS development
 - Kubernetes-ready deployment
-- mirrord configuration for debugging SQS consumers with two different approaches
+- mirrord configuration for debugging SQS consumers with two different approaches:
+  - Queue splitting for non-disruptive debugging
+  - Copy target with scale down for exclusive debugging
 
 ## Prerequisites
 
@@ -32,7 +35,8 @@ A sample application demonstrating how to debug SQS consumers using mirrord. Thi
 - Kubernetes cluster
 - kubectl
 - mirrord CLI
-- helm (for alternative mirrord operator installation)
+- helm (for mirrord operator installation)
+- LocalStack (for local development)
 
 ## Setup Options
 
@@ -44,15 +48,23 @@ For testing locally without Kubernetes:
 docker compose up --build
 ```
 
-This will start the LocalStack SQS emulator, producer, and consumer services in Docker containers.
+This will start:
+- LocalStack SQS emulator
+- Producer service with web UI
+- Consumer service
+- All services are configured to work together with LocalStack
 
 ### 2. Local Python Environment
 
 If you prefer running the Python application directly:
 
 ```bash
-conda create -n sqs-debug python=3.9 -y && conda activate sqs-debug && pip install -r requirements.txt
+# Create and activate conda environment
+conda create -n sqs-debug python=3.9 -y
 conda activate sqs-debug
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ### 3. Kubernetes Deployment
@@ -60,8 +72,15 @@ conda activate sqs-debug
 Deploy the application to your Kubernetes cluster:
 
 ```bash
+# Apply all Kubernetes manifests
 kubectl apply -f kube/
 ```
+
+This will deploy:
+- LocalStack service for SQS emulation
+- Producer deployment with web UI
+- Consumer deployment
+- mirrord operator configuration
 
 ## Debugging with mirrord
 
@@ -79,6 +98,7 @@ This configuration:
 - Creates a copy of the target deployment's pod
 - Scales down the original deployment to zero replicas
 - Ensures your local application receives all messages
+- Perfect for isolated debugging sessions
 
 ### Approach 2: Queue Splitting
 
@@ -92,21 +112,42 @@ This configuration:
 - Allows both your local application and remote consumers to receive the same messages
 - Uses the mirrord operator to intercept and duplicate SQS messages
 - Supports message filtering for targeted debugging
+- Ideal for production debugging without disruption
 
 ## How it Works
 
-mirrord allows you to run your SQS consumer locally while connecting to your Kubernetes cluster:
+### LocalStack Integration
 
-- Your local consumer can receive messages from SQS queues in the cluster
-- You can debug your consumer code with local tools while processing real SQS messages
-- Choose between exclusive access to messages or non-disruptive debugging
+The application uses LocalStack to emulate SQS in local development:
+- LocalStack runs on port 4566
+- All services are configured to use LocalStack's endpoint
+- Test AWS credentials are used for authentication
+
+### mirrord Queue Splitting
+
+When using queue splitting:
+1. mirrord operator intercepts SQS messages
+2. Messages are duplicated and sent to both:
+   - Original consumer in the cluster
+   - Your local debugging environment
+3. Message filtering can be applied to focus on specific patterns
+
+### Message Flow
+
+1. Producer sends messages to SQS queue
+2. mirrord operator intercepts messages
+3. Messages are delivered to:
+   - Original consumer (if using queue splitting)
+   - Your local debugging environment
+4. You can debug the message processing in real-time
 
 ## Configuration Files
 
-This project includes several mirrord configuration files:
+This project includes several configuration files:
 
 - `.mirrord/mirrord.json`: Configuration for queue splitting
 - `.mirrord/copytarget_plus_scaledown.json`: Configuration for copy target with scale down
+
 
 ## Additional Documentation
 

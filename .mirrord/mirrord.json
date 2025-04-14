@@ -1,6 +1,6 @@
 {
     "operator": true,
-    "target": "deployment/consumer",
+    "target": "deployment/sqs-consumer",
     "feature": {
         "split_queues": {
             "sample-queue": {

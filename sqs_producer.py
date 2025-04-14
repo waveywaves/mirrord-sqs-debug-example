@@ -64,11 +64,15 @@ def send_message(sqs, queue_url, message, attributes=None):
             }
         
         # Send message with attributes
-        response = sqs.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps(message),
-            MessageAttributes=message_attributes if message_attributes else None
-        )
+        send_params = {
+            'QueueUrl': queue_url,
+            'MessageBody': json.dumps(message)
+        }
+        
+        if message_attributes:
+            send_params['MessageAttributes'] = message_attributes
+            
+        response = sqs.send_message(**send_params)
         logger.info(f"Message sent successfully")
         logger.info(f"Message ID: {response['MessageId']}")
         logger.info(f"Value: {message}")

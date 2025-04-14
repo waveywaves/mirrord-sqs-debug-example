@@ -52,4 +52,33 @@ spec:
             path: /_localstack/health
             port: 4566
           initialDelaySeconds: 10
-          periodSeconds: 5 
+          periodSeconds: 5
+      - name: queue-init
+        image: amazon/aws-cli:latest
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          until curl -s http://localhost:4566/_localstack/health | grep -q '"sqs": "running"'; do
+            echo "Waiting for LocalStack SQS to be ready..."
+            sleep 1
+          done
+          
+          echo "Creating SQS queue..."
+          aws --endpoint-url=http://localhost:4566 sqs create-queue \
+              --queue-name sample-queue \
+              --region us-east-1 \
+              --attributes '{
+                  "VisibilityTimeout": "30",
+                  "MessageRetentionPeriod": "345600",
+                  "ReceiveMessageWaitTimeSeconds": "20"
+              }'
+          
+          echo "SQS queue created successfully!"
+          sleep infinity
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "test"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "test"
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1" 
