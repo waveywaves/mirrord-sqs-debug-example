@@ -88,6 +88,12 @@ mirrord operator setup --accept-tos --license-key your-license-key --sqs-splitti
 
 **Note:** When installing with the mirrord-operator Helm chart, queue splitting is enabled by setting the `operator.queueSplitting` value to `true`.
 
+We will also be using localstack instead of AWS to test out SQS. With that in mind, we would also like to have the operator localstack instead of AWS as well. Let's update the environment variables in the operator with the following command to ensure that we override the AWS endpoint to our localstack instace which we shall deploy in the next section.
+
+```
+kubectl patch deployment mirrord-operator -n mirrord --patch-file patch/mirrord-operator-env.yaml
+```
+
 ## Sample application setup
 
 ### Overview of the sample application
@@ -192,7 +198,7 @@ kubectl port-forward deployment/sqs-producer 5000:5000
 
 Once you navigate here using your browser you should be able to able to access the producer UI.
 
-![SQS Producer UI Screenshot for Queue Splitting](images/sqs-producer-ui-screenshot.png)
+![SQS Producer UI Screenshot for Queue Splitting](images/queue%20splitting%20filtering%20producer.png)
 
 Now that we know how to access the producer, let's dive into two effective approaches for debugging SQS consumers with mirrord:
 
@@ -223,7 +229,7 @@ This configuration:
 
 This approach is illustrated in the following diagram:
 
-![Architecture Diagram - Copy Target with Scale Down](images/setup-with-mirrord-copytarget-scaledown.png)
+![Architecture Diagram - Copy Target with Scale Down](images/setup-copytarget-with-scaledown.png)
 
 1. Here the sqs-producer sends messages to the sample-queue
 2. Which is then picked up by the mirrord-copy Pod which has scaled the consumer Pod down and is going to relay the message to our local consumer.
@@ -241,7 +247,7 @@ APP_MODE=consumer PYTHONUNBUFFERED=1 mirrord exec --config .mirrord/copytarget_p
 
 When you run this command, you can use the producer to send messages which will then be picked up by your local consumer after which, you'll see output similar to:
 
-![Terminal Output for Copy Target](images/terminal-screenshot-for-copytarget-output.png)
+![Terminal Output for Copy Target](images/copy%20target%20k9s.png)
 
 **Tip:** This approach is perfect for isolated debugging, but be aware that it temporarily stops the original consumer from processing messages. Use it in development or testing environments rather than production.
 
@@ -254,7 +260,7 @@ Queue splitting is a powerful feature in mirrord that allows both your local app
 Before we get into how to use queue splitting, let's go through the following diagrams to illustrate how queue splitting works in mirrord:
 
 Initial setup with the mirrord operator intercepting messages:
-![Architecture Diagram - Queue Splitting with single debug consumer](images/setup-with-mirrord-queue-splitting-1.png)
+![Architecture Diagram - Queue Splitting with single debug consumer](images/setup-queue-splitting-with-single-debug.png)
 
 The mirrord operator intercepts messages at the SQS API level before they are delivered to consumers. It makes copies of these messages and delivers them to both the remote consumers and your local application. 
 
@@ -265,8 +271,7 @@ This works by:
 
 When multiple debug consumers are active, the mirrord operator creates temporary queues for each one. Each developer gets their own independent debug session with access to the message stream.
 
-In case of multiple debug consumers, a new temporary mirrord queue and mirrord-copy Pod is created for every new debug consumer. Setup with two distinct debug consumers:
-![Architecture Diagram - Queue Splitting setup with two debug consumers](images/setup-with-mirrord-queue-splitting-2.png)
+In case of multiple debug consumers, a new temporary mirrord queue and mirrord-copy Pod is created for every new debug consumer.
 
 mirrord allows multiple debug consumers to run simultaneously. Each developer can run their own local consumer, and all will receive copies of the same messages. The mirrord operator also ensures that each local debug consumer gets a complete copy of the message stream, without any competition between them or with the production consumers.
 
@@ -292,7 +297,7 @@ The queue splitting configuration can be found in the `.mirrord/mirrord.json` fi
             "sample_queue": {
                 "queue_type": "SQS",
                 "message_filter": {
-                    "source": "^sample-.*"
+                    "local": "1"
                 }
             }
         }
@@ -302,52 +307,33 @@ The queue splitting configuration can be found in the `.mirrord/mirrord.json` fi
 
 This configuration tells the local mirrord client:
 - The SQS queue to listen to (`sample_queue`)
-- To filter messages based on a pattern (`^sample-`)
+- To filter messages based on a pattern (the `local` message attribute key to have a value of `1`)
 - Which deployment to target (`sqs-consumer`)
 
 ##### Operator configuration
 
 The mirrord operator needs information about the SQS setup. This is configured using Kubernetes custom resources.
 
-First, create a `MirrordSQSClientConfig` resource:
+First, create a `MirrordWorkloadQueueRegistry` resource:
 
 ```yaml
 apiVersion: queues.mirrord.metalbear.co/v1alpha
-kind: MirrordSQSClientConfig
+kind: MirrordWorkloadQueueRegistry
 metadata:
-  name: base-config
-  namespace: mirrord
-spec:
-  properties:
-  - name: endpoint_url
-    value: http://localstack.default.svc.cluster.local:4566
-  - name: region_name
-    value: us-east-1
-  - name: aws_access_key_id
-    value: test
-  - name: aws_secret_access_key
-    value: test
-```
-
-Next, create a `MirrordSQSQueuesConsumer` resource:
-
-```yaml
-apiVersion: queues.mirrord.metalbear.co/v1alpha
-kind: MirrordSQSQueuesConsumer
-metadata:
-  name: sqs-consumer-queues
+  name: consumer-queue-registry
   namespace: default
 spec:
-  consumerApiVersion: apps/v1
-  consumerKind: Deployment
-  consumerName: sqs-consumer
   queues:
-  - id: sample_queue
-    clientConfig: base-config
-    nameSources:
-    - directEnvVar:
-        container: consumer
-        variable: QUEUE_NAME
+    sample-queue:
+      queueType: SQS
+      nameSource:
+        envVar: QUEUE_NAME
+      tags:
+        tool: mirrord
+  consumer:
+    name: sqs-consumer
+    container: consumer
+    workloadType: Deployment 
 ```
 
 Apply these configurations to your cluster:
@@ -356,31 +342,33 @@ Apply these configurations to your cluster:
 kubectl apply -f kube/
 ```
 
-Setting up the mirrord operator for queue splitting will look like this:
-
-![Terminal Screenshot for Setup Queue Splitting](images/terminal-screenshot-for-setup-queue-splitting.png)
-
 #### Running your local consumer with queue splitting
 
 Now you can run your local application with mirrord using queue splitting:
 
 ```bash
-APP_MODE=consumer PYTHONUNBUFFERED=1 mirrord exec -f .mirrord/mirrord.json -- python app.py
+mirrord exec -f .mirrord/mirrord.json -- python sqs_consumer.py
 ```
 
 **Tip:** You can use message filters to focus on specific patterns of messages, making debugging more targeted.
 
-After running with queue splitting and specific message filtering, you'll see output like this:
+After running with queue splitting and specific message filtering, you can produce messages with or without the necessary filter from the producer UI. You can access the producer UI at `https://localhost:8081` after running the following command:
 
-![Terminal Screenshot for Filter Queue Splitting](images/terminal-screenshot-for-filter-queue-splitting.png)
+```
+kubectl port-forward service/sqs-producer 8081:
+```
 
-You'll see that the consumer and the copy Pods are both available ensuring that the original consumer doesn't stop consuming the messages whereas the copy Pods will received the filtered messages:
+Once both the local debug sqs_consumer and the producer UI is accessible. Let's send some messages to see if the filtering works.
 
-![mirrord Exec Queue Splitting 1](images/mirrord-exec-queue-splitting-1.png)
+![Producer UI for Queue splitting](images/queue%20splitting%20filtering%20producer.png)
 
-Similarly multiple debug consumers can consume these messages without disrupting the original consumer by creating more copy Pods and temporary mirrord queues as required:
+After sending some messages with the required message attribute for filtering and some without, we can see in the debug sqs_consumer instance that the filtering indeed works.
 
-![mirrord Exec Queue Splitting 2](images/mirrord-exec-queue-splitting-2.png)
+You'll see that both the consumer and the copy Pod are available ensuring that the original consumer doesn't stop consuming the messages whereas the copy Pods will received the filtered messages:
+
+![mirrord Exec Queue Splitting 1](images/queue%20splitting%20k9s.png)
+
+Similarly multiple debug consumers can consume these messages without disrupting the original consumer by creating more copy Pods and temporary mirrord queues as required.
 
 Here, each instance creates its own mirrord-copy pod and receives the same messages, demonstrating how multiple developers can debug simultaneously. Notice in the second screenshot how multiple debug consumers are actively receiving messages in parallel. This collaborative debugging is made possible by [mirrord for Teams](https://mirrord.dev/docs/overview/teams/), which enables concurrent use of mirrord on the same environment.
 
